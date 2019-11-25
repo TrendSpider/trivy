@@ -1,4 +1,4 @@
-package pkg
+package standalone
 
 import (
 	"strings"
@@ -89,7 +89,7 @@ OPTIONS:
 		},
 		cli.BoolFlag{
 			Name:   "clear-cache, c",
-			Usage:  "clear image caches",
+			Usage:  "clear image caches without scanning",
 			EnvVar: "TRIVY_CLEAR_CACHE",
 		},
 		cli.BoolFlag{
