@@ -1,13 +1,13 @@
-package bundler_test
+package python_test
 
 import (
 	"os"
 	"testing"
 
-	"github.com/aquasecurity/trivy/pkg/detector/library/bundler"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/aquasecurity/trivy/pkg/detector/library/python"
 	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/types"
 	"github.com/aquasecurity/trivy/pkg/utils"
@@ -28,36 +28,36 @@ func TestAdvisory_DetectVulnerabilities(t *testing.T) {
 		{
 			name: "detected",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.1",
+				pkgName: "django",
+				pkgVer:  "2.2.11-alpha",
 			},
-			fixtures: []string{"testdata/fixtures/gem.yaml"},
+			fixtures: []string{"testdata/fixtures/pip.yaml"},
 			want: []types.DetectedVulnerability{
 				{
-					PkgName:          "activesupport",
-					InstalledVersion: "4.1.1",
-					VulnerabilityID:  "CVE-2015-3226",
-					FixedVersion:     ">= 4.2.2, ~> 4.1.11",
+					PkgName:          "django",
+					InstalledVersion: "2.2.11-alpha",
+					VulnerabilityID:  "CVE-2020-9402",
+					FixedVersion:     "1.11.29, 2.2.11, 3.0.4",
 				},
 			},
 		},
 		{
+			// https://github.com/aquasecurity/trivy/issues/713
 			name: "not detected",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.0.a",
+				pkgName: "django",
+				pkgVer:  "3.0.10",
 			},
-			fixtures: []string{"testdata/fixtures/gem.yaml"},
+			fixtures: []string{"testdata/fixtures/pip.yaml"},
 			want:     nil,
 		},
 		{
-			name: "invalid JSON",
+			name: "malformed JSON",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.0",
+				pkgName: "django",
+				pkgVer:  "2.0.18",
 			},
 			fixtures: []string{"testdata/fixtures/invalid-type.yaml"},
-			want:     nil,
 			wantErr:  "failed to unmarshal advisory JSON",
 		},
 	}
@@ -68,7 +68,7 @@ func TestAdvisory_DetectVulnerabilities(t *testing.T) {
 			dir := utils.InitTestDB(t, tt.fixtures)
 			defer os.RemoveAll(dir)
 
-			a := bundler.NewAdvisory()
+			a := python.NewAdvisory()
 			got, err := a.DetectVulnerabilities(tt.args.pkgName, tt.args.pkgVer)
 			if tt.wantErr != "" {
 				require.NotNil(t, err)

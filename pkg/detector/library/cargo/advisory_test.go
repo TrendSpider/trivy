@@ -1,10 +1,11 @@
-package bundler_test
+package cargo_test
 
 import (
 	"os"
 	"testing"
 
-	"github.com/aquasecurity/trivy/pkg/detector/library/bundler"
+	"github.com/aquasecurity/trivy/pkg/detector/library/cargo"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -28,33 +29,48 @@ func TestAdvisory_DetectVulnerabilities(t *testing.T) {
 		{
 			name: "detected",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.1",
+				pkgName: "bumpalo",
+				pkgVer:  "3.2.0",
 			},
-			fixtures: []string{"testdata/fixtures/gem.yaml"},
+			fixtures: []string{"testdata/fixtures/cargo.yaml"},
 			want: []types.DetectedVulnerability{
 				{
-					PkgName:          "activesupport",
-					InstalledVersion: "4.1.1",
-					VulnerabilityID:  "CVE-2015-3226",
-					FixedVersion:     ">= 4.2.2, ~> 4.1.11",
+					PkgName:          "bumpalo",
+					InstalledVersion: "3.2.0",
+					VulnerabilityID:  "RUSTSEC-2020-0006",
+					FixedVersion:     ">= 3.2.1",
 				},
 			},
 		},
 		{
 			name: "not detected",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.0.a",
+				pkgName: "bumpalo",
+				pkgVer:  "3.2.1",
 			},
-			fixtures: []string{"testdata/fixtures/gem.yaml"},
+			fixtures: []string{"testdata/fixtures/cargo.yaml"},
 			want:     nil,
+		},
+		{
+			name: "no patched version",
+			args: args{
+				pkgName: "bumpalo",
+				pkgVer:  "3.2.0",
+			},
+			fixtures: []string{"testdata/fixtures/no-patched-version.yaml"},
+			want: []types.DetectedVulnerability{
+				{
+					PkgName:          "bumpalo",
+					InstalledVersion: "3.2.0",
+					VulnerabilityID:  "RUSTSEC-2020-0006",
+				},
+			},
 		},
 		{
 			name: "invalid JSON",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.0",
+				pkgName: "bumpalo",
+				pkgVer:  "3.2.1",
 			},
 			fixtures: []string{"testdata/fixtures/invalid-type.yaml"},
 			want:     nil,
@@ -68,7 +84,7 @@ func TestAdvisory_DetectVulnerabilities(t *testing.T) {
 			dir := utils.InitTestDB(t, tt.fixtures)
 			defer os.RemoveAll(dir)
 
-			a := bundler.NewAdvisory()
+			a := cargo.NewAdvisory()
 			got, err := a.DetectVulnerabilities(tt.args.pkgName, tt.args.pkgVer)
 			if tt.wantErr != "" {
 				require.NotNil(t, err)

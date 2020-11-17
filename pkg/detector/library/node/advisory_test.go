@@ -1,13 +1,13 @@
-package bundler_test
+package node_test
 
 import (
 	"os"
 	"testing"
 
-	"github.com/aquasecurity/trivy/pkg/detector/library/bundler"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/aquasecurity/trivy/pkg/detector/library/node"
 	"github.com/aquasecurity/trivy/pkg/log"
 	"github.com/aquasecurity/trivy/pkg/types"
 	"github.com/aquasecurity/trivy/pkg/utils"
@@ -28,36 +28,43 @@ func TestAdvisory_DetectVulnerabilities(t *testing.T) {
 		{
 			name: "detected",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.1",
+				pkgName: "electron",
+				pkgVer:  "2.0.17",
 			},
-			fixtures: []string{"testdata/fixtures/gem.yaml"},
+			fixtures: []string{"testdata/fixtures/npm.yaml"},
 			want: []types.DetectedVulnerability{
 				{
-					PkgName:          "activesupport",
-					InstalledVersion: "4.1.1",
-					VulnerabilityID:  "CVE-2015-3226",
-					FixedVersion:     ">= 4.2.2, ~> 4.1.11",
+					PkgName:          "electron",
+					InstalledVersion: "2.0.17",
+					VulnerabilityID:  "CVE-2019-5786",
+					FixedVersion:     "^2.0.18, ^3.0.16, ^3.1.6, ^4.0.8, ^5.0.0-beta.5",
 				},
 			},
 		},
 		{
 			name: "not detected",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.0.a",
+				pkgName: "electron",
+				pkgVer:  "2.0.18",
 			},
-			fixtures: []string{"testdata/fixtures/gem.yaml"},
+			fixtures: []string{"testdata/fixtures/npm.yaml"},
 			want:     nil,
 		},
 		{
-			name: "invalid JSON",
+			name: "empty value",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.0",
+				pkgName: "electron",
+				pkgVer:  "2.0.18",
+			},
+			fixtures: []string{"testdata/fixtures/no-value.yaml"},
+			want:     nil,
+		},
+		{name: "malformed JSON",
+			args: args{
+				pkgName: "electron",
+				pkgVer:  "2.0.18",
 			},
 			fixtures: []string{"testdata/fixtures/invalid-type.yaml"},
-			want:     nil,
 			wantErr:  "failed to unmarshal advisory JSON",
 		},
 	}
@@ -68,7 +75,7 @@ func TestAdvisory_DetectVulnerabilities(t *testing.T) {
 			dir := utils.InitTestDB(t, tt.fixtures)
 			defer os.RemoveAll(dir)
 
-			a := bundler.NewAdvisory()
+			a := node.NewAdvisory()
 			got, err := a.DetectVulnerabilities(tt.args.pkgName, tt.args.pkgVer)
 			if tt.wantErr != "" {
 				require.NotNil(t, err)

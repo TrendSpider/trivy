@@ -1,10 +1,11 @@
-package bundler_test
+package composer_test
 
 import (
 	"os"
 	"testing"
 
-	"github.com/aquasecurity/trivy/pkg/detector/library/bundler"
+	"github.com/aquasecurity/trivy/pkg/detector/library/composer"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -28,36 +29,35 @@ func TestAdvisory_DetectVulnerabilities(t *testing.T) {
 		{
 			name: "detected",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.1",
+				pkgName: "aws/aws-sdk-php",
+				pkgVer:  "3.2.0",
 			},
-			fixtures: []string{"testdata/fixtures/gem.yaml"},
+			fixtures: []string{"testdata/fixtures/composer.yaml"},
 			want: []types.DetectedVulnerability{
 				{
-					PkgName:          "activesupport",
-					InstalledVersion: "4.1.1",
-					VulnerabilityID:  "CVE-2015-3226",
-					FixedVersion:     ">= 4.2.2, ~> 4.1.11",
+					PkgName:          "aws/aws-sdk-php",
+					InstalledVersion: "3.2.0",
+					VulnerabilityID:  "CVE-2015-5723",
+					FixedVersion:     "3.2.1",
 				},
 			},
 		},
 		{
 			name: "not detected",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.0.a",
+				pkgName: "guzzlehttp/guzzle",
+				pkgVer:  "5.3.1",
 			},
-			fixtures: []string{"testdata/fixtures/gem.yaml"},
+			fixtures: []string{"testdata/fixtures/composer.yaml"},
 			want:     nil,
 		},
 		{
-			name: "invalid JSON",
+			name: "malformed JSON",
 			args: args{
-				pkgName: "activesupport",
-				pkgVer:  "4.1.0",
+				pkgName: "aws/aws-sdk-php",
+				pkgVer:  "3.2.0",
 			},
 			fixtures: []string{"testdata/fixtures/invalid-type.yaml"},
-			want:     nil,
 			wantErr:  "failed to unmarshal advisory JSON",
 		},
 	}
@@ -68,7 +68,7 @@ func TestAdvisory_DetectVulnerabilities(t *testing.T) {
 			dir := utils.InitTestDB(t, tt.fixtures)
 			defer os.RemoveAll(dir)
 
-			a := bundler.NewAdvisory()
+			a := composer.NewAdvisory()
 			got, err := a.DetectVulnerabilities(tt.args.pkgName, tt.args.pkgVer)
 			if tt.wantErr != "" {
 				require.NotNil(t, err)
