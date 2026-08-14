@@ -1,0 +1,58 @@
+name: mirror-sync
+
+# Public mirror of github.com/aquasecurity/trivy.
+# Pulls upstream branches + tags and force-pushes them into this repo.
+# The service branch `mirror` (this repo's default branch) is never touched,
+# so this workflow file survives every sync.
+#
+# Auth: needs a PAT with `repo` + `workflow` scopes (classic) or
+# Contents:write + Workflows:write (fine-grained), stored as secret MIRROR_PAT.
+# GITHUB_TOKEN cannot be used because upstream contains .github/workflows/*
+# and GITHUB_TOKEN is not allowed to push workflow files.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"   # daily at 03:00 UTC
+  workflow_dispatch: {}    # manual run
+
+concurrency:
+  group: mirror-sync
+  cancel-in-progress: false
+
+permissions:
+  actions: write   # to disable upstream workflows
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror upstream -> this repo
+        env:
+          UPSTREAM: "https://github.com/aquasecurity/trivy.git"
+          DEST: "https://x-access-token:${{ secrets.MIRROR_PAT }}@github.com/${{ github.repository }}.git"
+        run: |
+          set -euo pipefail
+          git clone --mirror "$UPSTREAM" upstream.git
+          cd upstream.git
+          # Drop PR refs — GitHub rejects pushes to refs/pull/*.
+          git for-each-ref --format='%(refname)' refs/pull/ | while read -r r; do
+            git update-ref -d "$r"
+          done
+          # Push all branches and tags, force, WITHOUT --prune so the service
+          # branch `mirror` in the destination is preserved.
+          git push --force "$DEST" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
+          echo "Mirror sync complete."
+
+      - name: Keep upstream workflows disabled
+        # Mirrored branches carry Trivy's own .github/workflows/*, which would
+        # otherwise fire on every synced push. Disable everything except this
+        # workflow. New upstream workflows may fire once before being disabled.
+        env:
+          GH_TOKEN: ${{ secrets.MIRROR_PAT }}
+        run: |
+          set -euo pipefail
+          gh api "repos/${{ github.repository }}/actions/workflows" --paginate \
+            --jq '.workflows[] | select(.path != ".github/workflows/mirror-sync.yml" and .state == "active") | .id' \
+          | while read -r id; do
+              gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$id/disable" && echo "disabled workflow $id" || true
+            done
