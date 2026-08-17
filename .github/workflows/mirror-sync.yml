@@ -13,11 +13,7 @@ name: mirror-sync
 on:
   schedule:
     - cron: "0 3 * * *"    # daily at 03:00 UTC
-    # TEMP: multiple one-off ticks to test scheduled trigger (remove after verifying)
-    - cron: "59 7 * * *"
-    - cron: "4 8 * * *"
-    - cron: "9 8 * * *"
-    - cron: "14 8 * * *"
+    - cron: "0 15 * * *"   # daily at 15:00 UTC
   workflow_dispatch: {}    # manual run
 
 concurrency:
