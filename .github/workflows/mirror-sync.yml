@@ -53,7 +53,7 @@ jobs:
         run: |
           set -euo pipefail
           gh api "repos/${{ github.repository }}/actions/workflows" --paginate \
-            --jq '.workflows[] | select(.path != ".github/workflows/mirror-sync.yml" and .state == "active") | .id' \
+            --jq '.workflows[] | select(.path != ".github/workflows/mirror-sync.yml" and .path != ".github/workflows/build-release.yml" and .state == "active") | .id' \
           | while read -r id; do
               gh api -X PUT "repos/${{ github.repository }}/actions/workflows/$id/disable" && echo "disabled workflow $id" || true
             done

@@ -1,0 +1,105 @@
+name: build-release
+
+# Builds trivy binaries from the mirrored source and publishes them as a
+# GitHub Release in this repo. Asset names match upstream exactly
+# (trivy_<ver>_Linux-64bit.tar.gz, ...) so the official install.sh / curl work.
+#
+# Trigger: after each successful mirror-sync (new tags are already present),
+# builds the newest tag that has no Release yet. Manual runs can target any tag.
+#
+# Auth: secret MIRROR_PAT (Contents: write — to create releases).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build, e.g. v0.74.0 (empty = newest tag without a release)"
+        required: false
+  workflow_run:
+    workflows: ["mirror-sync"]
+    types: [completed]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    # Skip if the triggering mirror-sync failed; always run on manual dispatch.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.MIRROR_PAT }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Determine tag to build
+        id: pick
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            # newest vX.Y.Z tag in this repo
+            TAG=$(gh api "repos/$REPO/tags?per_page=100" --jq '.[].name' \
+                  | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          fi
+          echo "Selected tag: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          if [ -z "$TAG" ]; then
+            echo "No matching tag found."; echo "build=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — nothing to do."
+            echo "build=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "build=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout source at tag
+        if: steps.pick.outputs.build == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pick.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Set up Go
+        if: steps.pick.outputs.build == 'true'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        if: steps.pick.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.pick.outputs.tag }}"
+          VER="${TAG#v}"
+          LDFLAGS="-s -w -X github.com/aquasecurity/trivy/pkg/version/app.ver=${VER}"
+          mkdir -p dist
+          build() {
+            goos="$1"; goarch="$2"; label="$3"
+            echo "==> building $label (GOOS=$goos GOARCH=$goarch)"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+              go build -trimpath -ldflags "$LDFLAGS" -o trivy ./cmd/trivy/
+            # bundle the same extras upstream ships (best-effort)
+            tar -czf "dist/trivy_${VER}_${label}.tar.gz" trivy LICENSE README.md 2>/dev/null \
+              || tar -czf "dist/trivy_${VER}_${label}.tar.gz" trivy
+            rm -f trivy
+          }
+          build linux amd64 Linux-64bit
+          build linux arm64 Linux-ARM64
+          ( cd dist && sha256sum * > "trivy_${VER}_checksums.txt" )
+          echo "=== built artifacts ==="; ls -la dist
+
+      - name: Create GitHub Release
+        if: steps.pick.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.pick.outputs.tag }}"
+          gh release create "$TAG" --repo "$REPO" \
+            --title "$TAG" \
+            --notes "Trivy binaries built from source by the TrendSpider mirror. Upstream: https://github.com/aquasecurity/trivy/releases/tag/${TAG}" \
+            dist/*
+          echo "Release $TAG published."
