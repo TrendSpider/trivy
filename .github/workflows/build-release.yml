@@ -74,6 +74,8 @@ jobs:
         if: steps.pick.outputs.build == 'true'
         run: |
           set -euo pipefail
+          # Trivy uses the experimental encoding/json/v2, gated behind this flag.
+          export GOEXPERIMENT=jsonv2
           TAG="${{ steps.pick.outputs.tag }}"
           VER="${TAG#v}"
           LDFLAGS="-s -w -X github.com/aquasecurity/trivy/pkg/version/app.ver=${VER}"
