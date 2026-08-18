@@ -100,6 +100,12 @@ jobs:
         run: |
           set -euo pipefail
           TAG="${{ steps.pick.outputs.tag }}"
+          # If a release already exists (e.g. a concurrent run created it, or the
+          # earlier existence check was a false negative), skip WITHOUT failing.
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — skipping (no error)."
+            exit 0
+          fi
           gh release create "$TAG" --repo "$REPO" \
             --title "$TAG" \
             --notes "Trivy binaries built from source by the TrendSpider mirror. Upstream: https://github.com/aquasecurity/trivy/releases/tag/${TAG}" \
