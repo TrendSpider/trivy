@@ -33,21 +33,28 @@ jobs:
           DEST: "https://x-access-token:${{ secrets.MIRROR_PAT }}@github.com/${{ github.repository }}.git"
         run: |
           set -euo pipefail
+          # git-filter-repo is a single self-contained script.
+          curl -sSL https://raw.githubusercontent.com/newren/git-filter-repo/v2.47.0/git-filter-repo -o /usr/local/bin/git-filter-repo
+          chmod +x /usr/local/bin/git-filter-repo
           git clone --mirror "$UPSTREAM" upstream.git
           cd upstream.git
           # Drop PR refs — GitHub rejects pushes to refs/pull/*.
           git for-each-ref --format='%(refname)' refs/pull/ | while read -r r; do
             git update-ref -d "$r"
           done
+          # Strip upstream CI from every mirrored branch/tag so our force-push
+          # doesn't trigger Trivy's own workflows in this repo. build-release
+          # builds from source and doesn't need .github/workflows.
+          git filter-repo --force --invert-paths --path .github/workflows/
           # Push all branches and tags, force, WITHOUT --prune so the service
           # branch `mirror` in the destination is preserved.
           git push --force "$DEST" 'refs/heads/*:refs/heads/*' 'refs/tags/*:refs/tags/*'
           echo "Mirror sync complete."
 
       - name: Keep upstream workflows disabled
-        # Mirrored branches carry Trivy's own .github/workflows/*, which would
-        # otherwise fire on every synced push. Disable everything except this
-        # workflow. New upstream workflows may fire once before being disabled.
+        # Safety net: the sync above already strips .github/workflows from all
+        # mirrored refs, so nothing upstream should register. This still disables
+        # any leftover/previously-registered upstream workflow, just in case.
         env:
           GH_TOKEN: ${{ secrets.MIRROR_PAT }}
         run: |
