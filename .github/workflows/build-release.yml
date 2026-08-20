@@ -116,7 +116,10 @@ jobs:
                  "$("$GOVULN" -version 2>/dev/null | awk '/^Scanner:/{print $2; exit}')" \
                  "https://github.com/golang/vuln" \
                  "GATE — reachability, blocks build"
-          "$GOVULN" ./... || { echo "::error::govulncheck: reachable vulnerabilities found"; FAILED=1; }
+          # -show verbose also prints the vulnerabilities present in required
+          # modules that the code doesn't call (for visibility). Only reachable
+          # ones affect the exit code / gate.
+          "$GOVULN" -show verbose ./... || { echo "::error::govulncheck: reachable vulnerabilities found"; FAILED=1; }
 
           # ── 2) Grype — GATE (independent SCA; no testdata; critical only) ──
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin >/dev/null 2>&1
