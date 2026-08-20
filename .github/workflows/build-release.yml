@@ -68,7 +68,11 @@ jobs:
         if: steps.pick.outputs.build == 'true'
         uses: actions/setup-go@v5
         with:
-          go-version-file: go.mod
+          # Latest stable Go (not the exact version from go.mod): it includes
+          # the current stdlib security fixes, so govulncheck doesn't fail on
+          # already-patched standard-library CVEs. go.mod's version is a minimum,
+          # which stable always satisfies.
+          go-version: stable
 
       # Scan the source with TWO independent engines BEFORE building. If either
       # finds a fixable HIGH/CRITICAL vulnerability, this step fails and the
