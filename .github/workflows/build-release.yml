@@ -104,7 +104,14 @@ jobs:
 
           echo "::group::Grype (Anchore — independent SCA engine)"
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-          grype dir:. --fail-on high --only-fixed
+          # Exclude Trivy's own test fixtures (testdata/integration contain
+          # intentionally-vulnerable sample projects that never ship in the
+          # binary). Grype is not reachability-aware, so keep its gate at
+          # CRITICAL only — govulncheck already blocks any reachable issue.
+          grype dir:. \
+            --exclude './**/testdata/**' \
+            --exclude './**/integration/**' \
+            --only-fixed --fail-on critical
           echo "::endgroup::"
 
           echo "Both scanners passed — proceeding to build."

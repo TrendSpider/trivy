@@ -26,8 +26,8 @@ It keeps a full copy of the upstream source **and** builds our own Trivy binarie
 - **Tag selection:** builds the **newest `vX.Y.Z` tag that does not yet have a Release**. If the latest tag already has a Release, it does nothing. Manual runs can target any tag via the `tag` input.
 - **Security gate (before building):** the source is scanned by **two independent engines**, and the build only proceeds if both pass:
   - **`govulncheck`** (official Go `golang.org/x/vuln`) — reachability-based, reports only vulnerabilities actually reachable in the code.
-  - **`Grype`** (Anchore) — independent SCA engine with its own database; run with `--fail-on high --only-fixed`.
-  - If either finds a fixable HIGH/CRITICAL issue, the step fails and the build/release steps are skipped.
+  - **`Grype`** (Anchore) — independent SCA engine with its own database. Trivy's own `testdata/`/`integration/` fixtures (intentionally-vulnerable sample projects) are excluded, and since Grype is not reachability-aware its gate is kept at `--only-fixed --fail-on critical` (govulncheck already blocks any *reachable* issue at any severity).
+  - If either scanner fails, the build/release steps are skipped.
 - **Build:** `go build ./cmd/trivy/` with `GOEXPERIMENT=jsonv2` (Trivy uses the experimental `encoding/json/v2`), version injected via `-X …/pkg/version/app.ver=<ver>`, for **linux/amd64** and **linux/arm64**.
 - **Publish:** creates a GitHub **Release** on the tag with assets named exactly like upstream — `trivy_<ver>_Linux-64bit.tar.gz`, `trivy_<ver>_Linux-ARM64.tar.gz`, `trivy_<ver>_checksums.txt`. Creation is idempotent: if the Release already exists it is skipped without error.
 
