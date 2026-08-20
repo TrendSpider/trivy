@@ -90,31 +90,61 @@ jobs:
       # Scan the source with TWO independent engines BEFORE building. If either
       # finds a fixable HIGH/CRITICAL vulnerability, this step fails and the
       # build/release steps below are skipped (job stops on first failure).
-      - name: Security scan (govulncheck + Grype)
+      - name: Security scan (govulncheck + Grype + osv-scanner)
         if: steps.pick.outputs.build == 'true'
         env:
           GOEXPERIMENT: jsonv2   # Trivy needs encoding/json/v2 to compile
         run: |
-          set -euo pipefail
+          set -uo pipefail   # NOT -e: run all three scanners, decide at the end
 
-          echo "::group::govulncheck (Go official — reachability-based)"
+          banner() {   # big banner: tool / version / GitHub
+            echo ""
+            echo "╔══════════════════════════════════════════════════════════════════════╗"
+            printf "║  🔍  %-64s║\n" "$1"
+            printf "║      version : %-54s║\n" "$2"
+            printf "║      github  : %-54s║\n" "$3"
+            printf "║      role    : %-54s║\n" "$4"
+            echo "╚══════════════════════════════════════════════════════════════════════╝"
+            echo ""
+          }
+          FAILED=0
+
+          # ── 1) govulncheck — GATE (reachability: only vulns actually called) ──
           go install golang.org/x/vuln/cmd/govulncheck@latest
-          "$(go env GOPATH)/bin/govulncheck" ./...
-          echo "::endgroup::"
+          GOVULN="$(go env GOPATH)/bin/govulncheck"
+          banner "govulncheck (Go official)" \
+                 "$("$GOVULN" -version 2>/dev/null | head -1)" \
+                 "https://github.com/golang/vuln" \
+                 "GATE — reachability, blocks build"
+          "$GOVULN" ./... || { echo "::error::govulncheck: reachable vulnerabilities found"; FAILED=1; }
 
-          echo "::group::Grype (Anchore — independent SCA engine)"
-          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
-          # Exclude Trivy's own test fixtures (testdata/integration contain
-          # intentionally-vulnerable sample projects that never ship in the
-          # binary). Grype is not reachability-aware, so keep its gate at
-          # CRITICAL only — govulncheck already blocks any reachable issue.
-          grype dir:. \
-            --exclude './**/testdata/**' \
-            --exclude './**/integration/**' \
-            --only-fixed --fail-on critical
-          echo "::endgroup::"
+          # ── 2) Grype — GATE (independent SCA; no testdata; critical only) ──
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin >/dev/null 2>&1
+          banner "Grype (Anchore)" \
+                 "$(grype version 2>/dev/null | awk -F': *' '/^Version/{print $2; exit}')" \
+                 "https://github.com/anchore/grype" \
+                 "GATE — SCA, blocks on fixable CRITICAL"
+          grype dir:. --exclude './**/testdata/**' --exclude './**/integration/**' \
+                --only-fixed --fail-on critical || { echo "::error::Grype: fixable CRITICAL found"; FAILED=1; }
 
-          echo "Both scanners passed — proceeding to build."
+          # ── 3) osv-scanner — INFO (Google OSV base, root go.sum only) ──
+          # No reachability and no severity threshold, so it also reports vulns
+          # that aren't reachable in the binary — kept informational (does not
+          # block). Gives a third, independent database (OSV) for visibility.
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest
+          OSV="$(go env GOPATH)/bin/osv-scanner"
+          banner "osv-scanner (Google OSV)" \
+                 "$("$OSV" --version 2>/dev/null | head -1)" \
+                 "https://github.com/google/osv-scanner" \
+                 "INFO — reports go.sum, does NOT block"
+          "$OSV" scan source --lockfile go.sum || echo "::warning::osv-scanner reported vulnerabilities (informational, not blocking)"
+
+          echo ""
+          if [ "$FAILED" -ne 0 ]; then
+            echo "❌ A blocking scanner failed — build stopped."
+            exit 1
+          fi
+          echo "✅ Blocking scanners (govulncheck + Grype) passed — proceeding to build."
 
       - name: Build binaries
         if: steps.pick.outputs.build == 'true' && github.event.inputs.scan_only != 'true'
