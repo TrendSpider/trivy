@@ -90,7 +90,7 @@ jobs:
       # Scan the source with TWO independent engines BEFORE building. If either
       # finds a fixable HIGH/CRITICAL vulnerability, this step fails and the
       # build/release steps below are skipped (job stops on first failure).
-      - name: Security scan (govulncheck + Grype + osv-scanner)
+      - name: Security scan (integrity + vulnerabilities + capabilities)
         if: steps.pick.outputs.build == 'true'
         env:
           GOEXPERIMENT: jsonv2   # Trivy needs encoding/json/v2 to compile
@@ -108,6 +108,13 @@ jobs:
             echo ""
           }
           FAILED=0
+
+          # ── 0) go mod verify — GATE (dependency integrity / no tampering) ──
+          banner "go mod verify (Go toolchain)" \
+                 "$(go version | awk '{print $3}')" \
+                 "https://pkg.go.dev/cmd/go#hdr-Verify_dependencies" \
+                 "GATE — dependency integrity, blocks build"
+          go mod verify || { echo "::error::go mod verify: module checksum mismatch (possible tampering)"; FAILED=1; }
 
           # ── 1) govulncheck — GATE (reachability: only vulns actually called) ──
           go install golang.org/x/vuln/cmd/govulncheck@latest
@@ -142,6 +149,17 @@ jobs:
                  "INFO — reports go.mod, does NOT block"
           # Go's lockfile for osv-scanner is go.mod (go.sum is only checksums).
           "$OSV" scan source --lockfile go.mod || echo "::warning::osv-scanner reported vulnerabilities (informational, not blocking)"
+
+          # ── 5) capslock — INFO (what the code can actually DO: net/exec/files/unsafe) ──
+          # Surfaces the capabilities of the code + its dependencies — useful to
+          # spot unexpected/malicious behaviour. Informational (does not block).
+          go install github.com/google/capslock/cmd/capslock@latest
+          CAPS="$(go env GOPATH)/bin/capslock"
+          banner "capslock (Google)" \
+                 "$(go version -m "$CAPS" 2>/dev/null | awk '$1=="mod" && $2 ~ /capslock/ {print $3; exit}')" \
+                 "https://github.com/google/capslock" \
+                 "INFO — capability analysis, does NOT block"
+          "$CAPS" -packages ./... || echo "::warning::capslock returned non-zero (informational, not blocking)"
 
           echo ""
           if [ "$FAILED" -ne 0 ]; then

@@ -24,11 +24,12 @@ It keeps a full copy of the upstream source **and** builds our own Trivy binarie
 ### 2. `build-release` — build our own binaries
 - **Triggers:** automatically via `workflow_run` after every successful `mirror-sync` (so a freshly synced tag is picked up right away) + manual (`workflow_dispatch` with an optional `tag` input).
 - **Tag selection:** builds the **newest `vX.Y.Z` tag that does not yet have a Release**. If the latest tag already has a Release, it does nothing. Manual runs can target any tag via the `tag` input.
-- **Security scan (before building):** the source is scanned by **three independent engines**, each preceded by a big banner (tool / version / GitHub). Two are blocking **gates**, one is informational:
-  - **`govulncheck`** (official Go `golang.org/x/vuln`) — **GATE**. Reachability-based: reports only vulnerabilities actually reachable in the code, at any severity.
-  - **`Grype`** (Anchore) — **GATE**. Independent SCA with its own DB. Trivy's own `testdata/`/`integration/` fixtures (intentionally-vulnerable samples) are excluded; not reachability-aware, so kept at `--only-fixed --fail-on critical` (govulncheck already covers reachable issues).
-  - **`osv-scanner`** (Google OSV) — **INFO**. Scans only the root `go.mod` (real dependencies; `go.sum` is only checksums and isn't a recognised lockfile). It has no reachability and no severity threshold, so it also lists vulns that aren't reachable in the binary — kept **informational** (reported, but does not block); gives a third, independent database (OSV) for visibility.
-  - The build proceeds only if both **gates** pass; the informational scanner never blocks.
+- **Security scan (before building):** the source is checked by **five engines**, each preceded by a big banner (tool / version / GitHub / role). Three are blocking **gates**, two are informational; the build proceeds only if all gates pass.
+  - **`go mod verify`** (Go toolchain) — **GATE**. Verifies the downloaded modules match `go.sum` bit-for-bit (dependency integrity / no tampering).
+  - **`govulncheck`** (official Go `golang.org/x/vuln`) — **GATE**. Reachability-based: blocks only on vulnerabilities actually reachable in the code, at any severity (run with `-show verbose` so non-reachable module vulns are still listed for visibility).
+  - **`Grype`** (Anchore) — **GATE**. Independent SCA with its own DB. Trivy's own `testdata/`/`integration/` fixtures (intentionally-vulnerable samples) are excluded; not reachability-aware, so kept at `--only-fixed --fail-on critical`.
+  - **`osv-scanner`** (Google OSV) — **INFO**. Scans the root `go.mod` (real dependencies) against the OSV database. No reachability / severity threshold, so it also lists non-reachable vulns — reported, does not block.
+  - **`capslock`** (Google) — **INFO**. Capability analysis: what the code + dependencies can actually DO (network, exec, filesystem, unsafe, reflection). Surfaces unexpected/malicious behaviour — reported, does not block.
 - **Build:** `go build ./cmd/trivy/` with `GOEXPERIMENT=jsonv2` (Trivy uses the experimental `encoding/json/v2`), version injected via `-X …/pkg/version/app.ver=<ver>`, for **linux/amd64** and **linux/arm64**.
 - **Publish:** creates a GitHub **Release** on the tag with assets named exactly like upstream — `trivy_<ver>_Linux-64bit.tar.gz`, `trivy_<ver>_Linux-ARM64.tar.gz`, `trivy_<ver>_checksums.txt`. Creation is idempotent: if the Release already exists it is skipped without error.
 
