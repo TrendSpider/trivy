@@ -64,15 +64,20 @@ jobs:
           ref: ${{ steps.pick.outputs.tag }}
           fetch-depth: 1
 
+      # Use the latest PATCH of go.mod's MINOR (e.g. 1.26.x), not "stable".
+      # Same minor keeps Trivy's experimental encoding/json/v2 API compatible
+      # (so it compiles), while the newest patch already has the stdlib security
+      # fixes — so govulncheck doesn't fail on already-patched stdlib CVEs.
+      - name: Determine Go minor from go.mod
+        id: gomod
+        if: steps.pick.outputs.build == 'true'
+        run: echo "minor=$(grep -m1 '^go ' go.mod | awk '{print $2}' | cut -d. -f1-2)" >> "$GITHUB_OUTPUT"
+
       - name: Set up Go
         if: steps.pick.outputs.build == 'true'
         uses: actions/setup-go@v5
         with:
-          # Latest stable Go (not the exact version from go.mod): it includes
-          # the current stdlib security fixes, so govulncheck doesn't fail on
-          # already-patched standard-library CVEs. go.mod's version is a minimum,
-          # which stable always satisfies.
-          go-version: stable
+          go-version: "${{ steps.gomod.outputs.minor }}.x"
 
       # Scan the source with TWO independent engines BEFORE building. If either
       # finds a fixable HIGH/CRITICAL vulnerability, this step fails and the
