@@ -70,6 +70,28 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # Scan the source with TWO independent engines BEFORE building. If either
+      # finds a fixable HIGH/CRITICAL vulnerability, this step fails and the
+      # build/release steps below are skipped (job stops on first failure).
+      - name: Security scan (govulncheck + Grype)
+        if: steps.pick.outputs.build == 'true'
+        env:
+          GOEXPERIMENT: jsonv2   # Trivy needs encoding/json/v2 to compile
+        run: |
+          set -euo pipefail
+
+          echo "::group::govulncheck (Go official — reachability-based)"
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          "$(go env GOPATH)/bin/govulncheck" ./...
+          echo "::endgroup::"
+
+          echo "::group::Grype (Anchore — independent SCA engine)"
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+          grype dir:. --fail-on high --only-fixed
+          echo "::endgroup::"
+
+          echo "Both scanners passed — proceeding to build."
+
       - name: Build binaries
         if: steps.pick.outputs.build == 'true'
         run: |
