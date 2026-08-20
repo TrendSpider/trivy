@@ -15,6 +15,10 @@ on:
       tag:
         description: "Tag to build, e.g. v0.74.0 (empty = newest tag without a release)"
         required: false
+      scan_only:
+        description: "Only run the security scan on the tag (no build, no release)"
+        type: boolean
+        default: false
   workflow_run:
     workflows: ["mirror-sync"]
     types: [completed]
@@ -49,6 +53,10 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           if [ -z "$TAG" ]; then
             echo "No matching tag found."; echo "build=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "${{ github.event.inputs.scan_only }}" = "true" ]; then
+            echo "scan_only mode — will run the scan on $TAG without building/releasing."
+            echo "build=true" >> "$GITHUB_OUTPUT"; exit 0
           fi
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             echo "Release $TAG already exists — nothing to do."
@@ -102,7 +110,7 @@ jobs:
           echo "Both scanners passed — proceeding to build."
 
       - name: Build binaries
-        if: steps.pick.outputs.build == 'true'
+        if: steps.pick.outputs.build == 'true' && github.event.inputs.scan_only != 'true'
         run: |
           set -euo pipefail
           # Trivy uses the experimental encoding/json/v2, gated behind this flag.
@@ -127,7 +135,7 @@ jobs:
           echo "=== built artifacts ==="; ls -la dist
 
       - name: Create GitHub Release
-        if: steps.pick.outputs.build == 'true'
+        if: steps.pick.outputs.build == 'true' && github.event.inputs.scan_only != 'true'
         run: |
           set -euo pipefail
           TAG="${{ steps.pick.outputs.tag }}"
