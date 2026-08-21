@@ -48,11 +48,20 @@ jobs:
             # newest vX.Y.Z tag in this repo
             TAG=$(gh api "repos/$REPO/tags?per_page=100" --jq '.[].name' \
                   | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          else
+            # Normalise a bare version like "0.74.0" to the real tag "v0.74.0".
+            case "$TAG" in v*) ;; *) TAG="v$TAG" ;; esac
           fi
           echo "Selected tag: $TAG"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           if [ -z "$TAG" ]; then
             echo "No matching tag found."; echo "build=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          # Fail early with a clear message if the tag doesn't exist (typo, etc.)
+          # instead of letting the checkout step die with a cryptic git error.
+          if ! gh api "repos/$REPO/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag '$TAG' does not exist in $REPO. Trivy tags look like v0.74.0."
+            exit 1
           fi
           if [ "${{ github.event.inputs.scan_only }}" = "true" ]; then
             echo "scan_only mode — will run the scan on $TAG without building/releasing."
