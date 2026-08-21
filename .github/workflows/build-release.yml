@@ -87,15 +87,16 @@ jobs:
         with:
           go-version: "${{ steps.gomod.outputs.minor }}.x"
 
-      # Scan the source with TWO independent engines BEFORE building. If either
-      # finds a fixable HIGH/CRITICAL vulnerability, this step fails and the
-      # build/release steps below are skipped (job stops on first failure).
+      # Check the source BEFORE building — dependency integrity, vulnerabilities
+      # and capabilities. Five engines: three blocking GATES (go mod verify,
+      # govulncheck, Grype) and two INFO (osv-scanner, capslock). If any gate
+      # fails, the build/release steps below are skipped.
       - name: Security scan (integrity + vulnerabilities + capabilities)
         if: steps.pick.outputs.build == 'true'
         env:
           GOEXPERIMENT: jsonv2   # Trivy needs encoding/json/v2 to compile
         run: |
-          set -uo pipefail   # NOT -e: run all three scanners, decide at the end
+          set -uo pipefail   # NOT -e: run every scanner, decide at the end
 
           banner() {   # big banner: tool / version / GitHub
             echo ""
@@ -137,10 +138,10 @@ jobs:
           grype dir:. --exclude './**/testdata/**' --exclude './**/integration/**' \
                 --only-fixed --fail-on critical || { echo "::error::Grype: fixable CRITICAL found"; FAILED=1; }
 
-          # ── 3) osv-scanner — INFO (Google OSV base, root go.sum only) ──
+          # ── 3) osv-scanner — INFO (Google OSV base, root go.mod) ──
           # No reachability and no severity threshold, so it also reports vulns
           # that aren't reachable in the binary — kept informational (does not
-          # block). Gives a third, independent database (OSV) for visibility.
+          # block). Gives an independent database (OSV) for visibility.
           go install github.com/google/osv-scanner/v2/cmd/osv-scanner@latest
           OSV="$(go env GOPATH)/bin/osv-scanner"
           banner "osv-scanner (Google OSV)" \
@@ -150,7 +151,7 @@ jobs:
           # Go's lockfile for osv-scanner is go.mod (go.sum is only checksums).
           "$OSV" scan source --lockfile go.mod || echo "::warning::osv-scanner reported vulnerabilities (informational, not blocking)"
 
-          # ── 5) capslock — INFO (what the code can actually DO: net/exec/files/unsafe) ──
+          # ── 4) capslock — INFO (what the code can actually DO: net/exec/files/unsafe) ──
           # Surfaces the capabilities of the code + its dependencies — useful to
           # spot unexpected/malicious behaviour. Informational (does not block).
           go install github.com/google/capslock/cmd/capslock@latest
@@ -166,7 +167,7 @@ jobs:
             echo "❌ A blocking scanner failed — build stopped."
             exit 1
           fi
-          echo "✅ Blocking scanners (govulncheck + Grype) passed — proceeding to build."
+          echo "✅ All gates (go mod verify + govulncheck + Grype) passed — proceeding to build."
 
       - name: Build binaries
         if: steps.pick.outputs.build == 'true' && github.event.inputs.scan_only != 'true'

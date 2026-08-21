@@ -22,8 +22,9 @@ It keeps a full copy of the upstream source **and** builds our own Trivy binarie
 > Note: stripping workflows rewrites commit hashes, so the mirror's branch/tag hashes differ from upstream. That is expected and does not affect building (the version is taken from the tag name, not the commit).
 
 ### 2. `build-release` — build our own binaries
-- **Triggers:** automatically via `workflow_run` after every successful `mirror-sync` (so a freshly synced tag is picked up right away) + manual (`workflow_dispatch` with an optional `tag` input).
+- **Triggers:** automatically via `workflow_run` after every successful `mirror-sync` (so a freshly synced tag is picked up right away) + manual (`workflow_dispatch` with optional `tag` and `scan_only` inputs).
 - **Tag selection:** builds the **newest `vX.Y.Z` tag that does not yet have a Release**. If the latest tag already has a Release, it does nothing. Manual runs can target any tag via the `tag` input.
+- **Go version:** built with the **latest patch of the Go minor read from the tag's `go.mod`** (e.g. `1.26.x`, not `stable`). Same minor keeps Trivy's experimental `encoding/json/v2` API compatible (so it compiles), while the newest patch already ships the stdlib security fixes — otherwise `govulncheck` would trip over already-patched standard-library CVEs.
 - **Security scan (before building):** the source is checked by **five engines**, each preceded by a big banner (tool / version / GitHub / role). Three are blocking **gates**, two are informational; the build proceeds only if all gates pass.
   - **`go mod verify`** (Go toolchain) — **GATE**. Verifies the downloaded modules match `go.sum` bit-for-bit (dependency integrity / no tampering).
   - **`govulncheck`** (official Go `golang.org/x/vuln`) — **GATE**. Reachability-based: blocks only on vulnerabilities actually reachable in the code, at any severity (run with `-show verbose` so non-reachable module vulns are still listed for visibility).
@@ -56,3 +57,4 @@ Both workflows push code that includes `.github/workflows/*`, which the default 
 
 - **Sync now:** Actions → **mirror-sync** → *Run workflow*.
 - **Build a specific version:** Actions → **build-release** → *Run workflow* → set `tag` (e.g. `v0.73.0`).
+- **Scan a version without building:** Actions → **build-release** → *Run workflow* → set `tag` and enable **`scan_only`** — runs the five security engines against that tag and stops (no build, no release). Useful to check whether a version passes the gates.
