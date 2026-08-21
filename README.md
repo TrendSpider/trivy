@@ -44,8 +44,6 @@ curl -sfL https://github.com/TrendSpider/trivy/releases/download/v${VER}/trivy_$
 ./trivy --version
 ```
 
-The official `install.sh -r TrendSpider/trivy vX.Y.Z` also works.
-
 ## Requirements / setup
 
 Both workflows push code that includes `.github/workflows/*`, which the default `GITHUB_TOKEN` is not allowed to push. So the automation uses a personal access token stored as the repo secret **`MIRROR_PAT`**:
