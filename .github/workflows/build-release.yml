@@ -35,6 +35,7 @@ jobs:
     # Skip if the triggering mirror-sync failed; always run on manual dispatch.
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30   # safety backstop; scan+build normally take a few minutes
     env:
       GH_TOKEN: ${{ secrets.MIRROR_PAT }}
       REPO: ${{ github.repository }}
@@ -158,7 +159,9 @@ jobs:
                  "https://github.com/google/osv-scanner" \
                  "INFO — reports go.mod, does NOT block"
           # Go's lockfile for osv-scanner is go.mod (go.sum is only checksums).
-          "$OSV" scan source --lockfile go.mod || echo "::warning::osv-scanner reported vulnerabilities (informational, not blocking)"
+          # Time-boxed: it's INFO-only and must never hang the build.
+          timeout 300 "$OSV" scan source --lockfile go.mod \
+            || echo "::warning::osv-scanner reported vulnerabilities or timed out (informational, not blocking)"
 
           # ── 4) capslock — INFO (what the code can actually DO: net/exec/files/unsafe) ──
           # Surfaces the capabilities of the code + its dependencies — useful to
@@ -169,7 +172,10 @@ jobs:
                  "$(go version -m "$CAPS" 2>/dev/null | awk '$1=="mod" && $2 ~ /capslock/ {print $3; exit}')" \
                  "https://github.com/google/capslock" \
                  "INFO — capability analysis, does NOT block"
-          "$CAPS" -packages ./... || echo "::warning::capslock returned non-zero (informational, not blocking)"
+          # Time-boxed: capslock analyses ~470 packages and can hang; it's
+          # INFO-only, so cap it and never let it stall the build.
+          timeout 300 "$CAPS" -packages ./... \
+            || echo "::warning::capslock returned non-zero or timed out (informational, not blocking)"
 
           echo ""
           if [ "$FAILED" -ne 0 ]; then
