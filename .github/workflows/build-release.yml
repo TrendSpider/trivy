@@ -36,10 +36,6 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30   # safety backstop; scan+build normally take a few minutes
-    outputs:              # consumed by the capabilities job below
-      tag: ${{ steps.pick.outputs.tag }}
-      build: ${{ steps.pick.outputs.build }}
-      go_minor: ${{ steps.gomod.outputs.minor }}
     env:
       GH_TOKEN: ${{ secrets.MIRROR_PAT }}
       REPO: ${{ github.repository }}
@@ -104,9 +100,10 @@ jobs:
       # Check the source BEFORE building — dependency integrity and
       # vulnerabilities. Four engines here: three blocking GATES (go mod verify,
       # govulncheck, Grype) and one INFO (osv-scanner). If any gate fails, the
-      # build/release steps below are skipped. The fifth engine, capslock, runs
-      # in its own job (see `capabilities`): its whole-program analysis of ~470
-      # packages exhausted the runner's memory and took the build down with it.
+      # build/release steps below are skipped. capslock (capability analysis)
+      # is not part of the release gate: its whole-program analysis takes far
+      # too long and too much memory for this job, so it runs weekly on the
+      # latest release in the `capabilities` workflow and reports via issues.
       - name: Security scan (integrity + vulnerabilities)
         if: steps.pick.outputs.build == 'true'
         env:
@@ -221,41 +218,3 @@ jobs:
             --notes "Trivy binaries built from source by the TrendSpider mirror. Upstream: https://github.com/aquasecurity/trivy/releases/tag/${TAG}" \
             dist/*
           echo "Release $TAG published."
-
-  # ── capslock — INFO (what the code can actually DO: net/exec/files/unsafe) ──
-  # Surfaces the capabilities of the code + its dependencies — useful to spot
-  # unexpected/malicious behaviour. Informational: it runs on its own runner
-  # after the gates passed, cannot block the release, and if it runs out of
-  # memory or time only this job fails.
-  capabilities:
-    needs: build
-    if: ${{ needs.build.outputs.build == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    continue-on-error: true
-    steps:
-      - name: Checkout source at tag
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.build.outputs.tag }}
-          fetch-depth: 1
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "${{ needs.build.outputs.go_minor }}.x"
-
-      - name: capslock (Google)
-        env:
-          GOEXPERIMENT: jsonv2   # Trivy needs encoding/json/v2 to compile
-          GOMEMLIMIT: 5GiB       # make the GC work harder before the 7 GiB runner is exhausted
-        run: |
-          set -uo pipefail
-          go install github.com/google/capslock/cmd/capslock@latest
-          CAPS="$(go env GOPATH)/bin/capslock"
-          echo "capslock $(go version -m "$CAPS" 2>/dev/null | awk '$1=="mod" && $2 ~ /capslock/ {print $3; exit}') — https://github.com/google/capslock — INFO, does NOT block"
-          # Analyse the program that ships: the trivy binary and everything it
-          # imports. ./... would add every test package and helper tool in the
-          # repository, which never finished within the time box.
-          timeout 900 "$CAPS" -packages ./cmd/trivy \
-            || echo "::warning::capslock returned non-zero or timed out (informational, not blocking)"

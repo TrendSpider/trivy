@@ -1,0 +1,182 @@
+name: capabilities
+
+# Weekly capability audit of the latest released Trivy build with capslock
+# (https://github.com/google/capslock): what the binary and its dependencies
+# can do — network, exec, file system, unsafe, reflect, ... The report is
+# compared with the baseline stored on the `mirror` branch
+# (.github/capslock/baseline.json). New or removed capabilities open (or
+# update) an issue labelled `capabilities`; nothing here blocks a release.
+#
+# First run: there is no baseline yet, so the report becomes the baseline.
+# After reviewing an issue, re-run manually with update_baseline=true to
+# accept the current report as the new baseline.
+on:
+  schedule:
+    - cron: "0 6 * * 1"   # Mondays 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to analyse, e.g. v0.76.1 (empty = latest release)"
+        required: false
+      update_baseline:
+        description: "Accept the current report as the new baseline"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write   # commit the baseline to the mirror branch
+  issues: write     # open / update the capability-change issue
+
+concurrency:
+  group: capabilities
+  cancel-in-progress: false
+
+env:
+  BASELINE: .github/capslock/baseline.json
+  ISSUE_LABEL: capabilities
+
+jobs:
+  capslock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPO: ${{ github.repository }}
+    steps:
+      - name: Determine tag to analyse
+        id: pick
+        run: |
+          set -euo pipefail
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ]; then
+            TAG=$(gh release view --repo "$REPO" --json tagName --jq .tagName)
+          else
+            case "$TAG" in v*) ;; *) TAG="v$TAG" ;; esac
+          fi
+          gh api "repos/$REPO/git/ref/tags/$TAG" >/dev/null
+          echo "Analysing $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      # The service branch holds the baseline; the tag holds the source.
+      - name: Checkout service branch (baseline)
+        uses: actions/checkout@v4
+        with:
+          ref: mirror
+          path: service
+          fetch-depth: 1
+
+      - name: Checkout source at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pick.outputs.tag }}
+          path: src
+          fetch-depth: 1
+
+      - name: Determine Go minor from go.mod
+        id: gomod
+        run: echo "minor=$(grep -m1 '^go ' src/go.mod | awk '{print $2}' | cut -d. -f1-2)" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "${{ steps.gomod.outputs.minor }}.x"
+          cache-dependency-path: src/go.sum
+
+      - name: Run capslock
+        id: scan
+        working-directory: src
+        env:
+          GOEXPERIMENT: jsonv2   # Trivy needs encoding/json/v2 to compile
+          GOMEMLIMIT: 5GiB       # keep the GC ahead of the 7 GiB runner limit
+        run: |
+          set -uo pipefail
+          go install github.com/google/capslock/cmd/capslock@latest
+          CAPS="$(go env GOPATH)/bin/capslock"
+          echo "capslock $(go version -m "$CAPS" | awk '$1=="mod" && $2 ~ /capslock/ {print $3; exit}')"
+
+          # Whole-program analysis of the trivy binary (everything it imports).
+          timeout 3000 "$CAPS" -packages ./cmd/trivy -output=json > ../report.json
+          rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error::capslock failed or timed out (exit $rc)"; exit "$rc"
+          fi
+          echo "report: $(wc -c < ../report.json) bytes"
+
+          if [ ! -f "../service/$BASELINE" ]; then
+            echo "No baseline yet — this report becomes the baseline."
+            echo "result=bootstrap" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Package granularity: which packages gained or lost a capability.
+          # Exit codes: 0 same, 1 differences found, 2 error.
+          timeout 3000 "$CAPS" -packages ./cmd/trivy -output=compare -granularity=package \
+            "../service/$BASELINE" > ../compare.txt
+          rc=$?
+          case "$rc" in
+            0) echo "result=same" >> "$GITHUB_OUTPUT"; echo "No capability changes against the baseline." ;;
+            1) echo "result=different" >> "$GITHUB_OUTPUT"; echo "Capability changes found:"; cat ../compare.txt ;;
+            *) echo "::error::capslock compare failed (exit $rc)"; cat ../compare.txt; exit "$rc" ;;
+          esac
+
+      - name: Upload report
+        if: always() && steps.scan.outcome != 'skipped'
+        uses: actions/upload-artifact@v4
+        with:
+          name: capslock-${{ steps.pick.outputs.tag }}
+          path: |
+            report.json
+            compare.txt
+          if-no-files-found: ignore
+          retention-days: 90
+
+      - name: Open or update the issue
+        if: steps.scan.outputs.result == 'different'
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          gh label create "$ISSUE_LABEL" --repo "$REPO" --color 5319e7 \
+            --description "capslock reported capability changes" 2>/dev/null || true
+          {
+            echo "capslock found capability changes in **$TAG** compared with the baseline (\`$BASELINE\`)."
+            echo
+            echo "Run: $RUN_URL (full report attached as an artifact)."
+            echo
+            echo '```'
+            head -c 60000 compare.txt
+            echo '```'
+            echo
+            echo "If these changes are expected, re-run the **capabilities** workflow with **update_baseline = true** to accept the new report as the baseline."
+          } > issue.md
+          TITLE="capslock: capability changes in $TAG"
+          NUM=$(gh issue list --repo "$REPO" --label "$ISSUE_LABEL" --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$NUM" ]; then
+            gh issue comment "$NUM" --repo "$REPO" --body-file issue.md
+            echo "Updated issue #$NUM"
+          else
+            gh issue create --repo "$REPO" --title "$TITLE" --label "$ISSUE_LABEL" --body-file issue.md
+          fi
+
+      - name: Commit the baseline
+        if: steps.scan.outputs.result == 'bootstrap' || github.event.inputs.update_baseline == 'true'
+        working-directory: service
+        env:
+          TAG: ${{ steps.pick.outputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$BASELINE")"
+          cp ../report.json "$BASELINE"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$BASELINE"
+          if git diff --cached --quiet; then
+            echo "Baseline unchanged."; exit 0
+          fi
+          git commit -m "capslock: baseline from $TAG"
+          git push origin HEAD:mirror
+          echo "Baseline updated from $TAG."
+          # Close the change issue for this tag, if any.
+          NUM=$(gh issue list --repo "$REPO" --label "$ISSUE_LABEL" --state open --search "capslock: capability changes in $TAG in:title" --json number --jq '.[0].number // empty')
+          [ -n "$NUM" ] && gh issue close "$NUM" --repo "$REPO" --comment "Baseline updated from $TAG." || true
