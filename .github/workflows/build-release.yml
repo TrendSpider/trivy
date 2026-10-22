@@ -36,6 +36,10 @@ jobs:
     if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30   # safety backstop; scan+build normally take a few minutes
+    outputs:              # consumed by the capabilities job below
+      tag: ${{ steps.pick.outputs.tag }}
+      build: ${{ steps.pick.outputs.build }}
+      go_minor: ${{ steps.gomod.outputs.minor }}
     env:
       GH_TOKEN: ${{ secrets.MIRROR_PAT }}
       REPO: ${{ github.repository }}
@@ -97,11 +101,13 @@ jobs:
         with:
           go-version: "${{ steps.gomod.outputs.minor }}.x"
 
-      # Check the source BEFORE building — dependency integrity, vulnerabilities
-      # and capabilities. Five engines: three blocking GATES (go mod verify,
-      # govulncheck, Grype) and two INFO (osv-scanner, capslock). If any gate
-      # fails, the build/release steps below are skipped.
-      - name: Security scan (integrity + vulnerabilities + capabilities)
+      # Check the source BEFORE building — dependency integrity and
+      # vulnerabilities. Four engines here: three blocking GATES (go mod verify,
+      # govulncheck, Grype) and one INFO (osv-scanner). If any gate fails, the
+      # build/release steps below are skipped. The fifth engine, capslock, runs
+      # in its own job (see `capabilities`): its whole-program analysis of ~470
+      # packages exhausted the runner's memory and took the build down with it.
+      - name: Security scan (integrity + vulnerabilities)
         if: steps.pick.outputs.build == 'true'
         env:
           GOEXPERIMENT: jsonv2   # Trivy needs encoding/json/v2 to compile
@@ -167,20 +173,6 @@ jobs:
           timeout 300 "$OSV" scan source --lockfile go.mod \
             || echo "::warning::osv-scanner reported vulnerabilities or timed out (informational, not blocking)"
 
-          # ── 4) capslock — INFO (what the code can actually DO: net/exec/files/unsafe) ──
-          # Surfaces the capabilities of the code + its dependencies — useful to
-          # spot unexpected/malicious behaviour. Informational (does not block).
-          go install github.com/google/capslock/cmd/capslock@latest
-          CAPS="$(go env GOPATH)/bin/capslock"
-          banner "capslock (Google)" \
-                 "$(go version -m "$CAPS" 2>/dev/null | awk '$1=="mod" && $2 ~ /capslock/ {print $3; exit}')" \
-                 "https://github.com/google/capslock" \
-                 "INFO — capability analysis, does NOT block"
-          # Time-boxed: capslock analyses ~470 packages and can hang; it's
-          # INFO-only, so cap it and never let it stall the build.
-          timeout 300 "$CAPS" -packages ./... \
-            || echo "::warning::capslock returned non-zero or timed out (informational, not blocking)"
-
           echo ""
           if [ "$FAILED" -ne 0 ]; then
             echo "❌ A blocking scanner failed — build stopped."
@@ -229,3 +221,39 @@ jobs:
             --notes "Trivy binaries built from source by the TrendSpider mirror. Upstream: https://github.com/aquasecurity/trivy/releases/tag/${TAG}" \
             dist/*
           echo "Release $TAG published."
+
+  # ── capslock — INFO (what the code can actually DO: net/exec/files/unsafe) ──
+  # Surfaces the capabilities of the code + its dependencies — useful to spot
+  # unexpected/malicious behaviour. Informational: it runs on its own runner
+  # after the gates passed, cannot block the release, and if it runs out of
+  # memory or time only this job fails.
+  capabilities:
+    needs: build
+    if: ${{ needs.build.outputs.build == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - name: Checkout source at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.build.outputs.tag }}
+          fetch-depth: 1
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "${{ needs.build.outputs.go_minor }}.x"
+
+      - name: capslock (Google)
+        env:
+          GOEXPERIMENT: jsonv2   # Trivy needs encoding/json/v2 to compile
+          GOMEMLIMIT: 5GiB       # make the GC work harder before the 7 GiB runner is exhausted
+        run: |
+          set -uo pipefail
+          go install github.com/google/capslock/cmd/capslock@latest
+          CAPS="$(go env GOPATH)/bin/capslock"
+          echo "capslock $(go version -m "$CAPS" 2>/dev/null | awk '$1=="mod" && $2 ~ /capslock/ {print $3; exit}') — https://github.com/google/capslock — INFO, does NOT block"
+          # Time-boxed: whole-program analysis of ~470 packages.
+          timeout 900 "$CAPS" -packages ./... \
+            || echo "::warning::capslock returned non-zero or timed out (informational, not blocking)"
