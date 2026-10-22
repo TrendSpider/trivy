@@ -254,6 +254,8 @@ jobs:
           go install github.com/google/capslock/cmd/capslock@latest
           CAPS="$(go env GOPATH)/bin/capslock"
           echo "capslock $(go version -m "$CAPS" 2>/dev/null | awk '$1=="mod" && $2 ~ /capslock/ {print $3; exit}') — https://github.com/google/capslock — INFO, does NOT block"
-          # Time-boxed: whole-program analysis of ~470 packages.
-          timeout 900 "$CAPS" -packages ./... \
+          # Analyse the program that ships: the trivy binary and everything it
+          # imports. ./... would add every test package and helper tool in the
+          # repository, which never finished within the time box.
+          timeout 900 "$CAPS" -packages ./cmd/trivy \
             || echo "::warning::capslock returned non-zero or timed out (informational, not blocking)"
