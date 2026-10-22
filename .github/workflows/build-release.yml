@@ -140,12 +140,16 @@ jobs:
           "$GOVULN" -show verbose ./... || { echo "::error::govulncheck: reachable vulnerabilities found"; FAILED=1; }
 
           # ── 2) Grype — GATE (independent SCA; no testdata; critical only) ──
+          # docs/ is excluded too: docs/build/requirements.txt pins the Python
+          # toolchain of the documentation site (mkdocs-material and friends),
+          # which never ships in the binary, yet its advisories (e.g. certifi,
+          # GHSA-6q48-6c7w-9gw2) would block the release.
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin >/dev/null 2>&1
           banner "Grype (Anchore)" \
                  "$(grype version 2>/dev/null | awk -F': *' '/^Version/{print $2; exit}')" \
                  "https://github.com/anchore/grype" \
                  "GATE — SCA, blocks on fixable CRITICAL"
-          grype dir:. --exclude './**/testdata/**' --exclude './**/integration/**' \
+          grype dir:. --exclude './**/testdata/**' --exclude './**/integration/**' --exclude './docs/**' \
                 --only-fixed --fail-on critical || { echo "::error::Grype: fixable CRITICAL found"; FAILED=1; }
 
           # ── 3) osv-scanner — INFO (Google OSV base, root go.mod) ──
