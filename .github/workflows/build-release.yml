@@ -5,7 +5,9 @@ name: build-release
 # (trivy_<ver>_Linux-64bit.tar.gz, ...) so the official install.sh / curl work.
 #
 # Trigger: after each successful mirror-sync (new tags are already present),
-# builds the newest tag that has no Release yet. Manual runs can target any tag.
+# builds the newest tag that has no Release yet. A tag that already failed the
+# security gate is skipped until a newer upstream tag appears (marker in the
+# Actions cache). Manual runs can target any tag and always rebuild it.
 #
 # Auth: secret MIRROR_PAT (Contents: write — to create releases).
 
@@ -75,8 +77,46 @@ jobs:
             echo "build=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Checkout source at tag
+      # A tag that already failed the security gate is NOT rebuilt on every
+      # mirror-sync (twice a day): the result cannot change until upstream
+      # publishes a fixed tag, so those runs were pure noise. The marker is an
+      # Actions cache entry keyed by the tag; a newer tag has a different key
+      # and builds normally. A manual dispatch with an explicit tag ignores the
+      # marker (that is the way to force a rebuild). Cache entries are evicted
+      # after 7 days without access; the twice-daily lookup keeps it alive, and
+      # at worst one extra failed run per week recreates it.
+      - name: Look for an earlier gate failure on this tag
+        id: marker
+        if: steps.pick.outputs.build == 'true' && github.event.inputs.tag == ''
+        uses: actions/cache/restore@v4
+        with:
+          path: .gate-failed
+          key: gate-failed-${{ steps.pick.outputs.tag }}
+          lookup-only: true
+
+      - name: Skip a tag that already failed the gate
+        id: gate
         if: steps.pick.outputs.build == 'true'
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.pick.outputs.tag }}"
+          if [ "${{ steps.marker.outputs.cache-hit }}" != "true" ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          echo "::notice::$TAG already failed the security gate in an earlier run — not rebuilding it."
+          # Is there a fix upstream already? Compare with the newest upstream tag.
+          UPSTREAM=$(gh api "repos/aquasecurity/trivy/tags?per_page=100" --jq '.[].name' \
+                     | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          if [ -n "$UPSTREAM" ] && [ "$UPSTREAM" != "$TAG" ]; then
+            echo "Upstream already has $UPSTREAM; it is not in the mirror yet — the next mirror-sync will bring it and this workflow will build it."
+          else
+            echo "No upstream tag newer than $TAG yet — waiting for a release with the dependency fixes."
+          fi
+          echo "To force a rebuild of $TAG anyway: run this workflow manually with tag=$TAG."
+          echo "build=false" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source at tag
+        if: steps.gate.outputs.build == 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.pick.outputs.tag }}
@@ -88,11 +128,11 @@ jobs:
       # fixes — so govulncheck doesn't fail on already-patched stdlib CVEs.
       - name: Determine Go minor from go.mod
         id: gomod
-        if: steps.pick.outputs.build == 'true'
+        if: steps.gate.outputs.build == 'true'
         run: echo "minor=$(grep -m1 '^go ' go.mod | awk '{print $2}' | cut -d. -f1-2)" >> "$GITHUB_OUTPUT"
 
       - name: Set up Go
-        if: steps.pick.outputs.build == 'true'
+        if: steps.gate.outputs.build == 'true'
         uses: actions/setup-go@v5
         with:
           go-version: "${{ steps.gomod.outputs.minor }}.x"
@@ -105,7 +145,8 @@ jobs:
       # too long and too much memory for this job, so it runs weekly on the
       # latest release in the `capabilities` workflow and reports via issues.
       - name: Security scan (integrity + vulnerabilities)
-        if: steps.pick.outputs.build == 'true'
+        id: scan
+        if: steps.gate.outputs.build == 'true'
         env:
           GOEXPERIMENT: jsonv2   # Trivy needs encoding/json/v2 to compile
         run: |
@@ -177,8 +218,22 @@ jobs:
           fi
           echo "✅ All gates (go mod verify + govulncheck + Grype) passed — proceeding to build."
 
+      # Remember the gate failure so the next mirror-sync does not rebuild the
+      # same tag. Only on a real gate failure of an automatic run; scan_only
+      # dispatches are exploratory and leave no marker.
+      - name: Record the gate failure for this tag
+        if: failure() && steps.scan.outcome == 'failure' && github.event.inputs.scan_only != 'true' && steps.marker.outputs.cache-hit != 'true'
+        run: echo "${{ steps.pick.outputs.tag }} failed the security gate on $(date -u +%Y-%m-%dT%H:%M:%SZ) in run ${{ github.run_id }}" > .gate-failed
+
+      - name: Save the gate-failure marker
+        uses: actions/cache/save@v4
+        if: failure() && steps.scan.outcome == 'failure' && github.event.inputs.scan_only != 'true' && steps.marker.outputs.cache-hit != 'true'
+        with:
+          path: .gate-failed
+          key: gate-failed-${{ steps.pick.outputs.tag }}
+
       - name: Build binaries
-        if: steps.pick.outputs.build == 'true' && github.event.inputs.scan_only != 'true'
+        if: steps.gate.outputs.build == 'true' && github.event.inputs.scan_only != 'true'
         run: |
           set -euo pipefail
           # Trivy uses the experimental encoding/json/v2, gated behind this flag.
@@ -203,7 +258,7 @@ jobs:
           echo "=== built artifacts ==="; ls -la dist
 
       - name: Create GitHub Release
-        if: steps.pick.outputs.build == 'true' && github.event.inputs.scan_only != 'true'
+        if: steps.gate.outputs.build == 'true' && github.event.inputs.scan_only != 'true'
         run: |
           set -euo pipefail
           TAG="${{ steps.pick.outputs.tag }}"
